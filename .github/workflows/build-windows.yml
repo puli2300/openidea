@@ -35,7 +35,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # The official updater pubkey needs its private key to sign update artifacts;
       # a fork has no such key, so build installers without updater artifacts.
-      - run: pnpm tauri build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - run: pnpm tauri build --target x86_64-pc-windows-msvc --config src-tauri/tauri.fork.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: openidea-windows-x64
