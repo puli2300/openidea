@@ -33,7 +33,9 @@ jobs:
           key: x86_64-pc-windows-msvc
           cache-on-failure: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build --target x86_64-pc-windows-msvc
+      # The official updater pubkey needs its private key to sign update artifacts;
+      # a fork has no such key, so build installers without updater artifacts.
+      - run: pnpm tauri build --target x86_64-pc-windows-msvc --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - uses: actions/upload-artifact@v4
         with:
           name: openidea-windows-x64
