@@ -196,6 +196,24 @@ function computeLazy(session: DebugSessionId, node: VarNode): Promise<VarNode> {
 
 const tracksChanges = (n: VarNode) => (n.kind === "var" || n.kind === "watch") && !n.error;
 
+/**
+ * A child list this large is never loaded automatically: the adapter formats every element,
+ * so an 8192-row array costs seconds per stop. Opening such a row still loads it; the next
+ * stop collapses it again instead of fetching it once more.
+ */
+const AUTO_LOAD_LIMIT = 1000;
+
+/** Stands in for the marks before the user opens anything in the current stop. */
+const NO_KEYS: ReadonlySet<string> = new Set();
+
+/** The element count of an array, from its type (`result_row_t[8192]`). */
+function collectionSize(n: VarNode): number | null {
+  const m = /\[(\d+)\]\s*$/.exec(n.typeName ?? "");
+  return m ? Number(m[1]) : null;
+}
+
+const hugeCollection = (n: VarNode) => (collectionSize(n) ?? 0) > AUTO_LOAD_LIMIT;
+
 /** Shared by every view: the variables pane remounts while the program runs between stops. */
 const valueChanges = new ValueChanges();
 
@@ -229,6 +247,12 @@ export function VariablesView({
   const children = current?.map ?? null;
   const resolved = current?.resolved ?? null;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(defaultExpanded));
+  /** Keys opened by hand, with the stop they belong to: a huge row needs one to load (see the effect below). */
+  const [manual, setManual] = useState<{ generation: number; keys: Set<string> }>(() => ({
+    generation,
+    keys: new Set(),
+  }));
+  const manualKeys = manual.generation === generation ? manual.keys : NO_KEYS;
   const loading = useRef(new Set<string>());
   const tree = useRef<TreeHandle>(null);
 
@@ -316,13 +340,34 @@ export function VariablesView({
     [session, generation],
   );
 
+  // A huge collection expanded before this stop shows collapsed: formatting all of its elements takes
+  // seconds, and one opened by hand in the current stop is worth one read, not one per stop.
+  const treeExpanded = useMemo(() => {
+    const hidden = [...expanded].filter((key) => {
+      const n = byKey.get(key);
+      return n !== undefined && n.reference > 0 && !children?.has(key) && hugeCollection(n) && !manualKeys.has(key);
+    });
+    return hidden.length ? new Set([...expanded].filter((key) => !hidden.includes(key))) : expanded;
+  }, [expanded, byKey, children, manualKeys]);
+
   // Re-load children of nodes that stay expanded across steps (and non-expensive scopes on first show).
   useEffect(() => {
     for (const n of byKey.values()) {
-      const wants = expanded.has(n.key);
+      const wants = treeExpanded.has(n.key);
       if (wants && n.reference > 0 && !children?.has(n.key)) void load(n);
     }
-  }, [byKey, expanded, children, load]);
+  }, [byKey, treeExpanded, children, load]);
+
+  /** Tree expansion, remembering the huge rows the user opened by hand in this stop. */
+  const changeExpanded = (next: Set<string>) => {
+    const opened = [...next].filter((key) => !treeExpanded.has(key));
+    if (opened.length)
+      setManual((prev) => ({
+        generation,
+        keys: new Set([...(prev.generation === generation ? prev.keys : []), ...opened]),
+      }));
+    setExpanded(next);
+  };
 
   const [editing, setEditing] = useState<{ key: string; value: string; error: string | null } | null>(null);
   const [valuePopup, setValuePopup] = useState<VarNode | null>(null);
@@ -457,8 +502,8 @@ export function VariablesView({
         getChildren={(n) => children?.get(n.key)}
         isExpandable={(n) => n.reference > 0}
         loadChildren={(n) => load(n)}
-        expanded={expanded}
-        onExpandedChange={(next) => setExpanded(next)}
+        expanded={treeExpanded}
+        onExpandedChange={changeExpanded}
         multiSelect={false}
         onContextMenu={onContextMenu}
         handleRef={tree}
